@@ -37,6 +37,8 @@ pub static ENABLED: AtomicBool = AtomicBool::new(true);
 /// Test-only (MACKEY_TEST_TREAT_INJECTED=1): treat injected events that do
 /// NOT carry our signature as physical, so a CI harness can exercise the
 /// remapping end-to-end with SendKeys/SendInput on a real Windows runner.
+/// Also disables the terminal exclusion list — the harness textbox lives in
+/// powershell.exe, which is an excluded app in normal operation.
 /// Off by default — normal builds pass every injected event through.
 static TEST_TREAT_INJECTED: AtomicBool = AtomicBool::new(false);
 
@@ -188,7 +190,10 @@ pub unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM
         extended: kb.flags & LLKHF_EXTENDED != 0,
         down,
     };
-    let out = engine().on_key(ev, foreground::excluded);
+    // Test mode: the harness window is hosted by powershell.exe, which the
+    // exclusion list would otherwise turn into a full passthrough session.
+    let test_mode = TEST_TREAT_INJECTED.load(Ordering::Relaxed);
+    let out = engine().on_key(ev, || !test_mode && foreground::excluded());
     if TEST_TREAT_INJECTED.load(Ordering::Relaxed) {
         let injected: Vec<String> = out
             .inject
