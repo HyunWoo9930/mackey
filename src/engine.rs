@@ -16,6 +16,12 @@
 use crate::mapping::{self, CtrlOp, Target};
 
 // modifier VKs (canonical Windows values, shared with mapping.rs)
+// Physical keyboards always emit the left/right-specific codes in a
+// low-level hook; the generic VK_SHIFT/VK_CONTROL/VK_MENU forms appear only
+// in synthetic input (SendKeys, automation) and are treated as the left key.
+pub const VK_SHIFT: u16 = 0x10;
+pub const VK_CONTROL: u16 = 0x11;
+pub const VK_MENU: u16 = 0x12;
 pub const VK_LSHIFT: u16 = 0xA0;
 pub const VK_RSHIFT: u16 = 0xA1;
 pub const VK_LMENU: u16 = 0xA4;
@@ -154,7 +160,7 @@ impl Engine {
     pub fn on_key(&mut self, ev: KeyEvent, foreground_excluded: impl FnOnce() -> bool) -> Output {
         // Physical Shift and Ctrl always pass through; we track their state.
         match ev.vk {
-            VK_LSHIFT => {
+            VK_LSHIFT | VK_SHIFT => {
                 self.lshift = ev.down;
                 return Output::pass();
             }
@@ -162,12 +168,12 @@ impl Engine {
                 self.rshift = ev.down;
                 return Output::pass();
             }
-            VK_LCONTROL | VK_RCONTROL => {
+            VK_LCONTROL | VK_RCONTROL | VK_CONTROL => {
                 let first = !self.ctrl.any() && ev.down;
-                if ev.vk == VK_LCONTROL {
-                    self.ctrl.ldown = ev.down;
-                } else {
+                if ev.vk == VK_RCONTROL {
                     self.ctrl.rdown = ev.down;
+                } else {
+                    self.ctrl.ldown = ev.down;
                 }
                 if first && self.enabled {
                     self.ctrl.passthrough = foreground_excluded();
@@ -185,7 +191,7 @@ impl Engine {
             // 한/영 sits right of Space — exactly where right Cmd lives on a
             // Mac keyboard — so it IS a Cmd key. (한/영 toggling moves to
             // Caps Lock and Ctrl+Space, like macOS.)
-            VK_LMENU | VK_RMENU | VK_HANGUL => Some(Layer::Cmd),
+            VK_LMENU | VK_RMENU | VK_MENU | VK_HANGUL => Some(Layer::Cmd),
             VK_LWIN | VK_RWIN => Some(Layer::Opt),
             _ => None,
         };
@@ -826,6 +832,23 @@ mod tests {
             // held Alt+← keeps emitting Home (cursor stays at line start)
             expect_chord(&e.on_key(ev(VK_LEFT, true), || false), &[], VK_HOME);
         }
+    }
+
+    #[test]
+    fn generic_modifier_vks_from_synthetic_input_work() {
+        // SendKeys/automation sends VK_MENU (0x12) instead of VK_LMENU —
+        // must open the Cmd session all the same (used by the CI harness)
+        let mut e = Engine::new();
+        assert!(!e.on_key(ev(VK_MENU, true), || false).pass);
+        expect_chord(&e.on_key(ev(VK_A, true), || false), &[VK_LCONTROL], VK_A);
+        let up = e.on_key(ev(VK_MENU, false), || false);
+        assert!(!up.pass && up.inject.is_empty());
+        // generic VK_CONTROL drives the emacs layer too
+        assert!(e.on_key(ev(VK_CONTROL, true), || false).pass);
+        let a = e.on_key(ev(VK_A, true), || false);
+        assert_eq!(a.inject[1], Inj::down(VK_HOME));
+        assert_eq!(a.inject[0], Inj::up(VK_LCONTROL)); // lifted as left ctrl
+        assert!(e.on_key(ev(VK_CONTROL, false), || false).pass);
     }
 
     #[test]
