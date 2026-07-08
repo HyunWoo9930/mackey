@@ -59,8 +59,9 @@ Add-Type -Namespace Native -Name Win -MemberDefinition @"
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "MacKey E2E"
 $form.TopMost = $true
+# single-line on purpose: the Win32 EDIT control ignores Ctrl+A select-all
+# in multiline mode (WinForms quirk), which would fake a remapping failure
 $tb = New-Object System.Windows.Forms.TextBox
-$tb.Multiline = $true
 $tb.Dock = "Fill"
 $form.Controls.Add($tb)
 $form.Show()
@@ -119,6 +120,9 @@ Ensure-Focus
 Pump 300
 [System.Windows.Forms.SendKeys]::SendWait("%a")   # Alt+A
 Pump 400
+if ($tb.SelectionLength -ne $tb.Text.Length) {
+    throw "FAIL: Alt+A select-all - selected $($tb.SelectionLength)/$($tb.Text.Length) chars"
+}
 [System.Windows.Forms.SendKeys]::SendWait("%c")   # Alt+C
 Pump 600
 $clip = [System.Windows.Forms.Clipboard]::GetText()
