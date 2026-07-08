@@ -46,6 +46,9 @@ static mut ENGINE: Option<Engine> = None;
 static mut KBD_HOOK: HHOOK = std::ptr::null_mut();
 static mut MOUSE_HOOK: HHOOK = std::ptr::null_mut();
 
+/// Tick of the last keyboard event our hook saw (watchdog heartbeat).
+static LAST_KBD_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 // Hook state is only touched from the hook thread.
 #[allow(static_mut_refs)]
 unsafe fn engine() -> &'static mut Engine {
@@ -72,6 +75,10 @@ pub fn install() {
         TEST_TREAT_INJECTED.store(true, Ordering::Relaxed);
         diag("test-mode ON");
     }
+    LAST_KBD_TICK.store(
+        unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() },
+        Ordering::Relaxed,
+    );
     unsafe {
         engine(); // init before the first event
         KBD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kbd_proc), std::ptr::null_mut(), 0);
@@ -90,6 +97,39 @@ pub fn uninstall() {
             UnhookWindowsHookEx(MOUSE_HOOK);
             MOUSE_HOOK = std::ptr::null_mut();
         }
+    }
+}
+
+/// Watchdog (called every minute from a tray-window timer): Windows silently
+/// removes a low-level hook whose callback ever exceeds the hook timeout.
+/// If the SYSTEM has seen keyboard input recently but OUR hook hasn't seen
+/// any event for much longer, the hook is gone — re-install it.
+pub fn watchdog_check() {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+    const HOOK_SILENT_MS: u32 = 120_000; // our hook: nothing for 2 min
+    const SYSTEM_ACTIVE_MS: u32 = 30_000; // but the user typed within 30 s
+
+    unsafe {
+        let now = GetTickCount();
+        let last_seen = LAST_KBD_TICK.load(Ordering::Relaxed);
+        if now.wrapping_sub(last_seen) < HOOK_SILENT_MS {
+            return;
+        }
+        let mut lii = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        if GetLastInputInfo(&mut lii) == 0 {
+            return;
+        }
+        if now.wrapping_sub(lii.dwTime) > SYSTEM_ACTIVE_MS {
+            return; // system idle too — nothing suspicious
+        }
+        // keyboard/mouse active but our hook is deaf → re-register
+        diag("watchdog: hook silent while system active - reinstalling");
+        uninstall();
+        KBD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kbd_proc), std::ptr::null_mut(), 0);
+        MOUSE_HOOK = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), std::ptr::null_mut(), 0);
+        LAST_KBD_TICK.store(now, Ordering::Relaxed);
     }
 }
 
@@ -162,6 +202,10 @@ pub unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM
     if code < 0 {
         return pass(code, wparam, lparam);
     }
+    LAST_KBD_TICK.store(
+        windows_sys::Win32::System::SystemInformation::GetTickCount(),
+        Ordering::Relaxed,
+    );
     let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
 
     // Never touch injected events (ours or any other app's) → no feedback

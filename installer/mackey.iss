@@ -10,7 +10,7 @@
 [Setup]
 AppId={{7B7C61E4-9D5B-4E1A-A54B-52F1D0A5C9A2}
 AppName=MacKey
-AppVersion=0.2.0
+AppVersion=0.2.1
 AppPublisher=MacKey
 DefaultDirName={autopf}\MacKey
 DisableProgramGroupPage=yes

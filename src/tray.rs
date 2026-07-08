@@ -13,8 +13,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadImageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
     SetForegroundWindow, TrackPopupMenu, HICON, HMENU, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
 use crate::{autostart, hook};
@@ -117,8 +117,14 @@ unsafe fn show_menu(hwnd: HWND) {
     }
 }
 
+const WATCHDOG_TIMER_ID: usize = 1;
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_TIMER => {
+            hook::watchdog_check();
+            0
+        }
         WM_TRAY => {
             match lparam as u32 {
                 WM_RBUTTONUP => show_menu(hwnd),
@@ -168,5 +174,7 @@ pub fn init() {
         );
         HWND_TRAY = hwnd;
         add_or_update_icon(hwnd, true);
+        // hook-health watchdog, once a minute (see hook::watchdog_check)
+        SetTimer(hwnd, WATCHDOG_TIMER_ID, 60_000, None);
     }
 }
