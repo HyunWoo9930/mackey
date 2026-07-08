@@ -24,9 +24,10 @@ Write-Host "PASS: process resident, low-level hooks installed"
 # -- 2. zero-config autostart: first run registered the scheduled task --
 $null = schtasks /Query /TN MacKey 2>&1
 if ($LASTEXITCODE -ne 0) { throw "FAIL: scheduled task 'MacKey' was not registered on first run" }
-$taskInfo = schtasks /Query /TN MacKey /V /FO LIST | Out-String
-if ($taskInfo -notmatch "(?i)(highest|가장 높은)") {
-    throw "FAIL: task exists but not 'Run with highest privileges':`n$taskInfo"
+# the run level only shows up in the XML definition, not in /V text output
+$taskXml = schtasks /Query /TN MacKey /XML | Out-String
+if ($taskXml -notmatch "<RunLevel>HighestAvailable</RunLevel>") {
+    throw "FAIL: task exists but RunLevel is not HighestAvailable:`n$taskXml"
 }
 Write-Host "PASS: Task Scheduler autostart registered with highest privileges"
 
@@ -116,6 +117,34 @@ Send-VK 0x5B $true    # Win up
 Pump 500
 if ($tb.SelectionStart -ne 6) { throw "FAIL: Win+Left word-move - caret at $($tb.SelectionStart), expected 6" }
 Write-Host "PASS: Win+Left -> Ctrl+Left (word-wise move, no Start menu)"
+
+# -- 4. mac-only mode: Windows-native Ctrl shortcuts are gone --
+
+# 4a. Ctrl+A → Home (emacs line start), NOT select-all
+$tb.Text = "mac-only-mode"
+$tb.SelectionStart = $tb.Text.Length; $tb.SelectionLength = 0
+Pump 300
+[System.Windows.Forms.SendKeys]::SendWait("^a")   # Ctrl+A
+Pump 500
+if ($tb.SelectionLength -ne 0) { throw "FAIL: Ctrl+A still selects all (windows-native alive)" }
+if ($tb.SelectionStart -ne 0) { throw "FAIL: Ctrl+A - caret at $($tb.SelectionStart), expected 0 (Home)" }
+Write-Host "PASS: Ctrl+A -> line start (emacs), not select-all"
+
+# 4b. Ctrl+E → End
+[System.Windows.Forms.SendKeys]::SendWait("^e")   # Ctrl+E
+Pump 500
+if ($tb.SelectionStart -ne $tb.Text.Length) { throw "FAIL: Ctrl+E - caret at $($tb.SelectionStart)" }
+Write-Host "PASS: Ctrl+E -> line end (emacs)"
+
+# 4c. Ctrl+C → dead (copy is Cmd/Alt+C now)
+[System.Windows.Forms.Clipboard]::Clear()
+$tb.SelectAll()
+Pump 200
+[System.Windows.Forms.SendKeys]::SendWait("^c")   # Ctrl+C
+Pump 500
+$clip2 = [System.Windows.Forms.Clipboard]::GetText()
+if ($clip2 -ne "") { throw "FAIL: Ctrl+C still copies ('$clip2') - windows-native alive" }
+Write-Host "PASS: Ctrl+C is dead (copy is Alt+C)"
 
 $form.Close()
 Stop-Process -Id $proc.Id -Force

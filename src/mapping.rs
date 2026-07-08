@@ -9,7 +9,10 @@
 pub const VK_BACK: u16 = 0x08;
 pub const VK_TAB: u16 = 0x09;
 pub const VK_RETURN: u16 = 0x0D;
+pub const VK_CAPITAL: u16 = 0x14; // Caps Lock
+pub const VK_HANGUL: u16 = 0x15; // 한/영
 pub const VK_SPACE: u16 = 0x20;
+pub const VK_NEXT: u16 = 0x22; // Page Down
 pub const VK_END: u16 = 0x23;
 pub const VK_HOME: u16 = 0x24;
 pub const VK_LEFT: u16 = 0x25;
@@ -17,6 +20,7 @@ pub const VK_UP: u16 = 0x26;
 pub const VK_RIGHT: u16 = 0x27;
 pub const VK_DOWN: u16 = 0x28;
 pub const VK_DELETE: u16 = 0x2E;
+pub const VK_LWIN: u16 = 0x5B;
 pub const VK_F4: u16 = 0x73;
 pub const VK_LSHIFT: u16 = 0xA0;
 pub const VK_LCONTROL: u16 = 0xA2;
@@ -67,6 +71,8 @@ pub fn cmd_map(vk: u16, shift: bool) -> Option<Target> {
         VK_UP => Some(ctrl(VK_HOME)),
         VK_DOWN => Some(ctrl(VK_END)),
         VK_RETURN => Some(ctrl(VK_RETURN)),
+        // Cmd+Space ≈ Spotlight → Windows search (a Win-key tap)
+        VK_SPACE => Some(plain(VK_LWIN)),
         // Everything Cmd+<letter> on macOS is Ctrl+<letter> on Windows:
         // A S F N P R T W C V X + all the rest (O open, B bold, L addressbar,
         // D bookmark, G find-next, ...). Blanket-map letters and digits.
@@ -83,8 +89,8 @@ pub fn cmd_map(vk: u16, shift: bool) -> Option<Target> {
 
 /// Option layer: physical Win held. Word-wise editing.
 ///
-/// `None` → forward as a genuine Win+key so Win+L, Win+D, Win+Shift+S, ...
-/// all keep working.
+/// `None` → the chord is swallowed (mac-only mode: Win+L, Win+D and friends
+/// do not exist on a Mac, so they must not fire).
 pub fn opt_map(vk: u16) -> Option<Target> {
     match vk {
         VK_LEFT => Some(ctrl(VK_LEFT)),
@@ -95,6 +101,60 @@ pub fn opt_map(vk: u16) -> Option<Target> {
         VK_DELETE => Some(ctrl(VK_DELETE)), // delete word right
         _ => None,
     }
+}
+
+/// What a physical-Ctrl chord does in mac-only mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtrlOp {
+    /// Inject a chord (physical Ctrl is lifted around it by the engine).
+    Chord(Target),
+    /// Inject a literal key sequence (vk, is_down).
+    Seq(&'static [(u16, bool)]),
+}
+
+/// Ctrl layer: on a Mac, Ctrl in a text field is the emacs/readline layer —
+/// and crucially Ctrl+C / Ctrl+V are NOT copy/paste. Windows-native Ctrl
+/// shortcuts must die so only the mac semantics remain.
+///
+/// `Some` → inject the mac meaning. `None` + [`ctrl_passthrough`] false →
+/// the chord is swallowed (Windows-native shortcut removed).
+pub fn ctrl_map(vk: u16) -> Option<CtrlOp> {
+    use CtrlOp::{Chord, Seq};
+    match vk {
+        0x41 /* A */ => Some(Chord(plain(VK_HOME))),   // line start
+        0x45 /* E */ => Some(Chord(plain(VK_END))),    // line end
+        0x46 /* F */ => Some(Chord(plain(VK_RIGHT))),  // char forward
+        0x42 /* B */ => Some(Chord(plain(VK_LEFT))),   // char back
+        0x4E /* N */ => Some(Chord(plain(VK_DOWN))),   // next line
+        0x50 /* P */ => Some(Chord(plain(VK_UP))),     // prev line
+        0x44 /* D */ => Some(Chord(plain(VK_DELETE))), // forward delete
+        0x48 /* H */ => Some(Chord(plain(VK_BACK))),   // backspace
+        0x56 /* V */ => Some(Chord(plain(VK_NEXT))),   // page down
+        // kill to end of line (no clipboard, like the mac kill buffer):
+        // Shift+End to select, then Delete
+        0x4B /* K */ => Some(Seq(&[
+            (VK_LSHIFT, true),
+            (VK_END, true),
+            (VK_END, false),
+            (VK_LSHIFT, false),
+            (VK_DELETE, true),
+            (VK_DELETE, false),
+        ])),
+        // Ctrl+Space = input-source toggle (한/영), the macOS default
+        VK_SPACE => Some(Seq(&[(VK_HANGUL, true), (VK_HANGUL, false)])),
+        // Ctrl+←/→ = switch desktop (macOS Spaces) → Win+Ctrl+←/→
+        VK_LEFT => Some(Chord(Target { mods: &[VK_LWIN, VK_LCONTROL], vk: VK_LEFT, suppress_shift: false })),
+        VK_RIGHT => Some(Chord(Target { mods: &[VK_LWIN, VK_LCONTROL], vk: VK_RIGHT, suppress_shift: false })),
+        // Ctrl+↑ = Mission Control → Win+Tab (task view)
+        VK_UP => Some(Chord(Target { mods: &[VK_LWIN], vk: VK_TAB, suppress_shift: false })),
+        _ => None,
+    }
+}
+
+/// Keys that keep working under physical Ctrl (identical on mac):
+/// Ctrl+Tab cycles tabs, Ctrl+Enter behaves per-app.
+pub fn ctrl_passthrough(vk: u16) -> bool {
+    matches!(vk, VK_TAB | VK_RETURN)
 }
 
 /// Process image names (lowercase) where remapping is disabled entirely.
@@ -168,9 +228,21 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_space_are_never_remapped() {
+    fn tab_is_never_remapped_and_space_is_search() {
         assert_eq!(cmd_map(VK_TAB, false), None); // Alt+Tab untouched
         assert_eq!(cmd_map(VK_TAB, true), None); // Alt+Shift+Tab untouched
-        assert_eq!(cmd_map(VK_SPACE, false), None);
+        assert_eq!(cmd_map(VK_SPACE, false), Some(plain(VK_LWIN))); // ≈Spotlight
+    }
+
+    #[test]
+    fn ctrl_layer_is_emacs_not_windows() {
+        use CtrlOp::Chord;
+        assert_eq!(ctrl_map(0x41), Some(Chord(plain(VK_HOME)))); // Ctrl+A
+        assert_eq!(ctrl_map(0x45), Some(Chord(plain(VK_END)))); // Ctrl+E
+        assert_eq!(ctrl_map(0x43), None); // Ctrl+C: NOT copy anymore
+        assert_eq!(ctrl_map(0x58), None); // Ctrl+X: NOT cut
+        assert_eq!(ctrl_map(0x5A), None); // Ctrl+Z: NOT undo
+        assert!(ctrl_passthrough(VK_TAB)); // Ctrl+Tab cycles tabs (mac parity)
+        assert!(!ctrl_passthrough(0x43));
     }
 }
