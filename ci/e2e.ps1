@@ -11,9 +11,24 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 
 $exePath = Resolve-Path $args[0]
-Write-Host "== MacKey E2E on $([System.Environment]::OSVersion.VersionString) =="
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-Host "== MacKey E2E on $([System.Environment]::OSVersion.VersionString) (elevated=$elevated) =="
 
+# test mode via marker file — env vars don't reliably survive the launch of
+# an elevated (requireAdministrator) process
+$diagLog = Join-Path $env:TEMP "mackey-e2e.log"
+Remove-Item $diagLog -ErrorAction SilentlyContinue
+New-Item -ItemType File -Path (Join-Path $env:TEMP "mackey-test-mode") -Force | Out-Null
 $env:MACKEY_TEST_TREAT_INJECTED = "1"
+
+function Dump-Diag {
+    Write-Host "---- mackey-e2e.log ----"
+    if (Test-Path $diagLog) { Get-Content $diagLog | Select-Object -Last 80 | Write-Host }
+    else { Write-Host "(no diagnostic log was written - test mode never activated?)" }
+    Write-Host "------------------------"
+}
+trap { Dump-Diag; break }
+
 $proc = Start-Process -FilePath $exePath -PassThru
 Start-Sleep -Seconds 4
 
@@ -195,6 +210,7 @@ Write-Host "PASS: Ctrl+C is dead (copy is Alt+C)"
 $form.Close()
 Stop-Process -Id $proc.Id -Force
 schtasks /Delete /F /TN MacKey 2>&1 | Out-Null
+Remove-Item (Join-Path $env:TEMP "mackey-test-mode") -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "== ALL E2E CHECKS PASSED on real Windows =="

@@ -50,9 +50,25 @@ unsafe fn engine() -> &'static mut Engine {
     ENGINE.get_or_insert_with(Engine::new)
 }
 
+/// Test-mode only: append a diagnostic line to %TEMP%\mackey-e2e.log so the
+/// CI harness can see exactly what the hook saw and decided. No-ops in
+/// normal operation.
+fn diag(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("mackey-e2e.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 pub fn install() {
-    if std::env::var_os("MACKEY_TEST_TREAT_INJECTED").is_some_and(|v| v == "1") {
+    // env var, or a marker file (environment doesn't always survive the
+    // launch of an elevated process, e.g. Start-Process on CI)
+    let test_mode = std::env::var_os("MACKEY_TEST_TREAT_INJECTED").is_some_and(|v| v == "1")
+        || std::env::temp_dir().join("mackey-test-mode").exists();
+    if test_mode {
         TEST_TREAT_INJECTED.store(true, Ordering::Relaxed);
+        diag("test-mode ON");
     }
     unsafe {
         engine(); // init before the first event
@@ -152,6 +168,9 @@ pub unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM
     // processed as if physical (see TEST_TREAT_INJECTED).
     if kb.flags & LLKHF_INJECTED != 0 || kb.dwExtraInfo == MAGIC {
         if kb.dwExtraInfo == MAGIC || !TEST_TREAT_INJECTED.load(Ordering::Relaxed) {
+            if TEST_TREAT_INJECTED.load(Ordering::Relaxed) {
+                diag(&format!("vk={:#04x} own-injection pass", kb.vkCode));
+            }
             return pass(code, wparam, lparam);
         }
     }
@@ -170,6 +189,21 @@ pub unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM
         down,
     };
     let out = engine().on_key(ev, foreground::excluded);
+    if TEST_TREAT_INJECTED.load(Ordering::Relaxed) {
+        let injected: Vec<String> = out
+            .inject
+            .iter()
+            .map(|i| format!("{:#04x}{}", i.vk, if i.down { "v" } else { "^" }))
+            .collect();
+        diag(&format!(
+            "vk={:#04x} {} flags={:#x} -> {} inject=[{}]",
+            ev.vk,
+            if down { "down" } else { "up" },
+            kb.flags,
+            if out.pass { "pass" } else { "swallow" },
+            injected.join(" ")
+        ));
+    }
     inject(&out.inject);
     if out.pass {
         pass(code, wparam, lparam)
