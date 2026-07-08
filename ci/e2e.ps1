@@ -32,6 +32,15 @@ if ($taskXml -notmatch "<RunLevel>HighestAvailable</RunLevel>") {
 Write-Host "PASS: Task Scheduler autostart registered with highest privileges"
 
 # -- 3. live remapping through a real focused textbox --
+Add-Type -AssemblyName System.Drawing
+Add-Type -Namespace Native -Name Win -MemberDefinition @"
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+"@
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "MacKey E2E"
 $form.TopMost = $true
@@ -40,10 +49,6 @@ $tb.Multiline = $true
 $tb.Dock = "Fill"
 $form.Controls.Add($tb)
 $form.Show()
-$form.Activate()
-$tb.Focus()
-[System.Windows.Forms.Application]::DoEvents()
-Start-Sleep -Milliseconds 500
 
 function Pump([int]$ms) {
     $end = (Get-Date).AddMilliseconds($ms)
@@ -53,10 +58,49 @@ function Pump([int]$ms) {
     }
 }
 
+function Get-ForegroundTitle {
+    $sb = New-Object System.Text.StringBuilder 256
+    [Native.Win]::GetWindowText([Native.Win]::GetForegroundWindow(), $sb, 256) | Out-Null
+    $sb.ToString()
+}
+
+# CI desktops don't hand out foreground focus willingly: retry, and fall back
+# to physically clicking into the textbox (a real click always grants focus).
+function Ensure-Focus {
+    for ($i = 0; $i -lt 25; $i++) {
+        [Native.Win]::SetForegroundWindow($form.Handle) | Out-Null
+        $form.Activate()
+        $null = $tb.Focus()
+        Pump 150
+        if ([Native.Win]::GetForegroundWindow() -eq $form.Handle -and $tb.Focused) { return }
+        if ($i -ge 5) {
+            $pt = $tb.PointToScreen([System.Drawing.Point]::new(20, 20))
+            [Native.Win]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+            [Native.Win]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero) # left down
+            [Native.Win]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) # left up
+            Pump 200
+        }
+    }
+    throw "FAIL(setup): could not focus test window (foreground='$(Get-ForegroundTitle)')"
+}
+
+Ensure-Focus
+
+# positive control: plain typing must reach the textbox before we blame the
+# remapper for anything
+$tb.Text = ""
+[System.Windows.Forms.SendKeys]::SendWait("ping")
+Pump 400
+if ($tb.Text -ne "ping") {
+    throw "FAIL(setup): SendKeys not reaching textbox (text='$($tb.Text)', foreground='$(Get-ForegroundTitle)')"
+}
+Write-Host "PASS: test window focused, synthetic input reaches it"
+
 # 3a. Alt+A → Ctrl+A (select all), Alt+C → Ctrl+C (copy) : clipboard proof
 $tb.Text = "hello-mackey"
 $tb.SelectionStart = 0; $tb.SelectionLength = 0
 [System.Windows.Forms.Clipboard]::Clear()
+Ensure-Focus
 Pump 300
 [System.Windows.Forms.SendKeys]::SendWait("%a")   # Alt+A
 Pump 400
@@ -76,6 +120,7 @@ Write-Host "PASS: Alt+V -> paste"
 # 3c. Alt+Left → Home (caret to line start)
 $tb.Text = "line-start-test"
 $tb.SelectionStart = $tb.Text.Length
+Ensure-Focus
 Pump 300
 [System.Windows.Forms.SendKeys]::SendWait("%{LEFT}")   # Alt+Left
 Pump 500
@@ -123,6 +168,7 @@ Write-Host "PASS: Win+Left -> Ctrl+Left (word-wise move, no Start menu)"
 # 4a. Ctrl+A → Home (emacs line start), NOT select-all
 $tb.Text = "mac-only-mode"
 $tb.SelectionStart = $tb.Text.Length; $tb.SelectionLength = 0
+Ensure-Focus
 Pump 300
 [System.Windows.Forms.SendKeys]::SendWait("^a")   # Ctrl+A
 Pump 500

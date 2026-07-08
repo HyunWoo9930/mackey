@@ -79,9 +79,10 @@ jobs:
           path: installer/output/MacKeySetup.exe
 
   # tag push (v*) → publish installer + exe on the Releases page
+  # (only after the real-Windows E2E suite passed)
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: installer
+    needs: [installer, e2e-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
