@@ -34,6 +34,12 @@ const LLKHF_EXTENDED: u32 = 0x01;
 /// Mirror of the engine's enabled flag for the tray UI.
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Test-only (MACKEY_TEST_TREAT_INJECTED=1): treat injected events that do
+/// NOT carry our signature as physical, so a CI harness can exercise the
+/// remapping end-to-end with SendKeys/SendInput on a real Windows runner.
+/// Off by default — normal builds pass every injected event through.
+static TEST_TREAT_INJECTED: AtomicBool = AtomicBool::new(false);
+
 static mut ENGINE: Option<Engine> = None;
 static mut KBD_HOOK: HHOOK = std::ptr::null_mut();
 static mut MOUSE_HOOK: HHOOK = std::ptr::null_mut();
@@ -45,6 +51,9 @@ unsafe fn engine() -> &'static mut Engine {
 }
 
 pub fn install() {
+    if std::env::var_os("MACKEY_TEST_TREAT_INJECTED").is_some_and(|v| v == "1") {
+        TEST_TREAT_INJECTED.store(true, Ordering::Relaxed);
+    }
     unsafe {
         engine(); // init before the first event
         KBD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kbd_proc), std::ptr::null_mut(), 0);
@@ -138,9 +147,13 @@ pub unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM
     let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
 
     // Never touch injected events (ours or any other app's) → no feedback
-    // loops, and other automation keeps working.
+    // loops, and other automation keeps working. Our own MAGIC-stamped
+    // events always pass; in CI test mode, foreign injected events are
+    // processed as if physical (see TEST_TREAT_INJECTED).
     if kb.flags & LLKHF_INJECTED != 0 || kb.dwExtraInfo == MAGIC {
-        return pass(code, wparam, lparam);
+        if kb.dwExtraInfo == MAGIC || !TEST_TREAT_INJECTED.load(Ordering::Relaxed) {
+            return pass(code, wparam, lparam);
+        }
     }
 
     let msg = wparam as u32;

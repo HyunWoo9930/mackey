@@ -29,6 +29,21 @@ jobs:
           name: mackey-exe
           path: target/x86_64-pc-windows-gnu/release/mackey.exe
 
+  # run the real exe on a real Windows machine: hook install, autostart
+  # registration, and live Alt=Cmd remapping through a focused textbox
+  e2e-windows:
+    needs: build-exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mackey-exe
+          path: bin
+      - name: End-to-end remap test
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File ci\e2e.ps1 bin\mackey.exe
+
   installer:
     needs: build-exe
     runs-on: windows-latest
@@ -42,6 +57,22 @@ jobs:
         shell: pwsh
         run: |
           iscc /DExePath=..\bin\mackey.exe installer\mackey.iss
+      - name: Install / uninstall cycle on real Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Start-Process -Wait installer\output\MacKeySetup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
+          $exe = "C:\Program Files\MacKey\mackey.exe"
+          if (!(Test-Path $exe)) { throw "FAIL: exe not installed" }
+          schtasks /Query /TN MacKey; if ($LASTEXITCODE -ne 0) { throw "FAIL: autostart task missing after install" }
+          Start-Sleep -Seconds 4
+          if (!(Get-Process mackey -ErrorAction SilentlyContinue)) { throw "FAIL: app not running after install" }
+          Write-Host "PASS: silent install -> files + autostart task + app resident"
+          Start-Process -Wait "C:\Program Files\MacKey\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES"
+          Start-Sleep -Seconds 2
+          schtasks /Query /TN MacKey 2>$null; if ($LASTEXITCODE -eq 0) { throw "FAIL: task still present after uninstall" }
+          if (Get-Process mackey -ErrorAction SilentlyContinue) { throw "FAIL: app still running after uninstall" }
+          Write-Host "PASS: silent uninstall -> task removed + app stopped"
       - uses: actions/upload-artifact@v4
         with:
           name: MacKeySetup
