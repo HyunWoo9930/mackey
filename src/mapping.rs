@@ -19,6 +19,7 @@ pub const VK_LEFT: u16 = 0x25;
 pub const VK_UP: u16 = 0x26;
 pub const VK_RIGHT: u16 = 0x27;
 pub const VK_DOWN: u16 = 0x28;
+pub const VK_SNAPSHOT: u16 = 0x2C; // PrintScreen
 pub const VK_DELETE: u16 = 0x2E;
 pub const VK_LWIN: u16 = 0x5B;
 pub const VK_F4: u16 = 0x73;
@@ -65,6 +66,13 @@ pub fn cmd_map(vk: u16, shift: bool) -> Option<Target> {
         // Cmd+Z undo / Cmd+Shift+Z redo (Ctrl+Y, Shift must not leak)
         0x5A /* Z */ if shift => Some(Target { mods: &[VK_LCONTROL], vk: 0x59 /* Y */, suppress_shift: true }),
         0x5A /* Z */ => Some(ctrl(0x5A)),
+        // Screenshots, macOS habits kept:
+        // Cmd+Shift+3 (full screen → file) → Win+PrintScreen; the physical
+        // Shift is lifted so the OS sees the pure save-to-file chord.
+        0x33 /* 3 */ if shift => Some(Target { mods: &[VK_LWIN], vk: VK_SNAPSHOT, suppress_shift: true }),
+        // Cmd+Shift+4 / +5 (region / toolbar) → Win+Shift+S snip overlay;
+        // the physically held Shift passes through and completes the chord.
+        0x34 | 0x35 /* 4 5 */ if shift => Some(Target { mods: &[VK_LWIN], vk: 0x53 /* S */, suppress_shift: false }),
         // Line / document navigation (physical Shift passes through → selection)
         VK_LEFT => Some(plain(VK_HOME)),
         VK_RIGHT => Some(plain(VK_END)),
@@ -200,6 +208,24 @@ mod tests {
         let redo = cmd_map(0x5A, true).unwrap();
         assert_eq!(redo.vk, 0x59); // Ctrl+Y
         assert!(redo.suppress_shift);
+    }
+
+    #[test]
+    fn screenshot_chords() {
+        // Cmd+Shift+3 → Win+PrintScreen, physical Shift lifted around it
+        let full = cmd_map(0x33, true).unwrap();
+        assert_eq!(full.mods, &[VK_LWIN]);
+        assert_eq!(full.vk, VK_SNAPSHOT);
+        assert!(full.suppress_shift);
+        // Cmd+Shift+4 / +5 → Win+(passed-through Shift)+S snip overlay
+        let region = cmd_map(0x34, true).unwrap();
+        assert_eq!(region.mods, &[VK_LWIN]);
+        assert_eq!(region.vk, 0x53);
+        assert!(!region.suppress_shift);
+        assert_eq!(cmd_map(0x35, true), cmd_map(0x34, true));
+        // without Shift the digits stay Ctrl+digit (tab switching)
+        assert_eq!(cmd_map(0x33, false).unwrap(), ctrl(0x33));
+        assert_eq!(cmd_map(0x34, false).unwrap(), ctrl(0x34));
     }
 
     #[test]

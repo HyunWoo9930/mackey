@@ -541,6 +541,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cmd_shift_4_opens_region_snip() {
+        let mut e = Engine::new();
+        // physical Shift passes through and completes the injected Win+S
+        assert!(e.on_key(ev(VK_LSHIFT, true), || false).pass);
+        e.on_key(ev(VK_LMENU, true), || false);
+        expect_chord(&e.on_key(ev(0x34 /* 4 */, true), || false), &[VK_LWIN], 0x53 /* S */);
+    }
+
+    #[test]
+    fn cmd_shift_3_full_screenshot_lifts_shift() {
+        let mut e = Engine::new();
+        e.on_key(ev(VK_LSHIFT, true), || false);
+        e.on_key(ev(VK_LMENU, true), || false);
+        // pure Win+PrintScreen must reach the OS (Shift lifted around it)
+        let out = e.on_key(ev(0x33 /* 3 */, true), || false);
+        assert_eq!(
+            out.inject,
+            vec![
+                Inj::up(VK_LSHIFT),
+                Inj::down(VK_LWIN),
+                Inj::down(0x2C), // PrintScreen
+                Inj::up(0x2C),
+                Inj::up(VK_LWIN),
+                Inj::down(VK_LSHIFT),
+            ]
+        );
+    }
+
     // -- criterion 3: Chrome — Alt+T/W/F new tab, close tab, find, quit --
 
     #[test]
